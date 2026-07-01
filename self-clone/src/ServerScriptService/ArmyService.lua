@@ -85,14 +85,41 @@ end)
 -- one clean recompute to the new ground height, minions correctly stop
 -- and wait, no repeat churn.
 local RAY_DISTANCE = 50
+local MAX_RAY_ATTEMPTS = 5 -- generous headroom for a cluster of minions stacked under the ray
+
+-- A plain "exclude the player's character" filter isn't enough: minions
+-- stand right next to the player, and a downward ray that happens to
+-- clip one produces a hit on a walking rig instead of terrain. That
+-- fed a bogus, constantly-changing Y into the anchor -- every time it
+-- crossed FormationComponent's recompute threshold it yanked the whole
+-- formation. So: if the ray hits anything that's part of a Model with a
+-- Humanoid (a minion or a character, any player's), exclude that model
+-- and re-cast, rather than trusting the hit.
 local function resolveAnchorPosition(player: Player, character: Model, primaryPart: BasePart): Vector3
 	local origin = primaryPart.Position
 
+	local excluded: { Instance } = { character }
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-	raycastParams.FilterDescendantsInstances = { character }
+	raycastParams.FilterDescendantsInstances = excluded
 
-	local result = workspace:Raycast(origin, Vector3.new(0, -RAY_DISTANCE, 0), raycastParams)
+	local result: RaycastResult? = nil
+	for _ = 1, MAX_RAY_ATTEMPTS do
+		result = workspace:Raycast(origin, Vector3.new(0, -RAY_DISTANCE, 0), raycastParams)
+		if not result then
+			break
+		end
+
+		local hitModel = result.Instance:FindFirstAncestorOfClass("Model")
+		if hitModel and hitModel:FindFirstChildOfClass("Humanoid") then
+			table.insert(excluded, hitModel)
+			raycastParams.FilterDescendantsInstances = excluded
+			result = nil -- keep looping, this wasn't terrain
+		else
+			break
+		end
+	end
+
 	if result then
 		lastGroundY[player] = result.Position.Y
 		return Vector3.new(origin.X, result.Position.Y, origin.Z)

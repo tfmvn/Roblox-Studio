@@ -1,7 +1,7 @@
 # .src.py
 
 class Project:
-    name = "simvox"
+    name = "self-clone"
 
 
 class Ollama:

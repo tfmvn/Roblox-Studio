@@ -30,41 +30,47 @@ local FormationGenerator = {}
 
 -- ---------------------------------------------------------------------
 -- Concentric "ring layer" math shared by Circle/Ring/Square.
--- Layer 0 = the single center slot. Layer k (k>=1) holds 6k slots, so
--- point density per ring stays constant as the formation grows instead of
--- one ring getting more and more crowded. Closed-form (sqrt + a couple of
--- corrective steps for float rounding) -- O(1), not a search loop.
+--
+-- DELIBERATELY NO CENTER SLOT. An earlier version put slot #1 at
+-- Vector3.zero -- i.e. dead center of the formation, which is the
+-- anchor position, which for an Army formation IS the player's own
+-- standing position. That minion could never "arrive" because the
+-- player's own hitbox physically shoves it away every time it gets
+-- close, so it kept re-aiming in a new direction every bucket cycle --
+-- which is exactly what "a few minions walking randomly / spinning"
+-- looks like (it's specifically the center occupant and whichever
+-- neighbors get jostled into it). Layer 1 (k=1) is now the innermost
+-- ring, `spacing` studs out from the anchor, which is enough to clear a
+-- standing player.
+--
+-- Layer k (k>=1) holds 6k slots, so point density per ring stays
+-- constant as the formation grows instead of one ring getting more and
+-- more crowded. Closed-form (sqrt + a couple of corrective steps for
+-- float rounding) -- O(1), not a search loop.
 -- ---------------------------------------------------------------------
 local function ringLayerOf(slotId: number): (number, number, number)
-	local index = slotId -- 1-based
-	if index <= 1 then
-		return 0, 0, 1
-	end
+	local index = slotId - 1 -- 0-based position among ALL slots (no center slot)
 
-	local m = index - 2 -- 0-based position among all non-center "ring slots"
-	local k = math.floor((-1 + math.sqrt(1 + (4 * m) / 3)) / 2)
-	if k < 0 then
-		k = 0
+	local k = math.floor((-1 + math.sqrt(1 + (4 * index) / 3)) / 2) + 1
+	if k < 1 then
+		k = 1
 	end
 	-- at most a couple of nudges to correct float rounding at the boundary
-	while 3 * k * (k + 1) <= m do
+	while 3 * k * (k + 1) <= index do
 		k += 1
 	end
-	while k > 0 and 3 * (k - 1) * k > m do
+	while k > 1 and 3 * (k - 1) * k > index do
 		k -= 1
 	end
 
-	local cumulativeBeforeLayer = 3 * k * (k - 1)
-	local posInLayer = m - cumulativeBeforeLayer
-	local capacity = if k == 0 then 1 else 6 * k
+	local cumulativeBeforeLayer = 3 * (k - 1) * k
+	local posInLayer = index - cumulativeBeforeLayer
+	local capacity = 6 * k
 	return k, posInLayer, capacity
 end
 
 local function circleOffset(slotId: number, spacing: number): Vector3
 	local layer, posInLayer, capacity = ringLayerOf(slotId)
-	if layer == 0 then
-		return Vector3.zero
-	end
 	-- stagger alternating layers by half a slot-width so minions don't
 	-- line up radially in dead-straight spokes
 	local stagger = if layer % 2 == 0 then 0 else (math.pi / capacity)
@@ -75,9 +81,6 @@ end
 
 local function squareOffset(slotId: number, spacing: number): Vector3
 	local layer, posInLayer, _capacity = ringLayerOf(slotId)
-	if layer == 0 then
-		return Vector3.zero
-	end
 	-- walk the perimeter of an (2*layer)x(2*layer) square, 8*layer points
 	-- evenly spaced, starting at the top-left corner and going clockwise
 	local side = layer * 2
@@ -100,7 +103,11 @@ end
 
 -- Triangle / phalanx wedge: row r (0-based) holds (r+1) slots, centered.
 -- Row of slotId found via the inverse triangular-number formula, closed
--- form, no search.
+-- form, no search. Row 0 is pushed one spacing unit forward (z = (row+1)
+-- * spacing, not row * spacing) so the single front-row slot never sits
+-- at (0,0,0) -- i.e. never coincides with the anchor / player position,
+-- for the same reason the center slot was removed from the ring shapes
+-- above.
 local function triangleOffset(slotId: number, spacing: number): Vector3
 	local index = slotId - 1 -- 0-based
 	local row = math.floor((-1 + math.sqrt(1 + 8 * index)) / 2)
@@ -108,7 +115,7 @@ local function triangleOffset(slotId: number, spacing: number): Vector3
 	local posInRow = index - rowStart
 	local rowWidth = row + 1
 	local x = (posInRow - (rowWidth - 1) / 2) * spacing
-	local z = row * spacing
+	local z = (row + 1) * spacing
 	return Vector3.new(x, 0, z)
 end
 
