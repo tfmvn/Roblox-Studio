@@ -1,6 +1,6 @@
 --!strict
 -- FormationGenerator.lua
--- Pure, stateless math: GetOffset(shape, slotId, spacing) -> (Vector3 offset, Vector3 jitter)
+-- Pure, stateless math: GetOffset(shape, slotId, spacing) -> Vector3 offset
 --
 -- The critical property: every shape here is a CLOSED-FORM function of
 -- slotId alone (plus spacing). Computing slot #501's offset never requires
@@ -15,21 +15,18 @@
 -- the one explicitly-allowed O(n) "Formation rebuild" in the spec, and it
 -- reuses the existing slot tables (FormationComponent:SetShape), it does
 -- not reallocate them.
+--
+-- NOTE: this module used to also hand back a per-slot "jitter" offset for
+-- idle wobble. That's gone -- jitter applied to the NAVIGATION target is
+-- exactly what caused minions to permanently orbit their slot instead of
+-- coming to rest (see FormationComponent.lua's design note). If idle
+-- motion is wanted later, it belongs entirely in the model/animation
+-- layer, never mixed into the value FormationSystem tells a Humanoid to
+-- walk toward.
 
 export type ShapeName = "Circle" | "Ring" | "Square" | "Triangle" | "Grid"
 
 local FormationGenerator = {}
-
--- ---------------------------------------------------------------------
--- Deterministic per-slot jitter (idle "breathing" offset). A hash of the
--- slot id, not math.random, so it's stable across reuse/rebuild and never
--- needs to be stored separately from the id that produced it.
--- ---------------------------------------------------------------------
-local function jitterFor(slotId: number): Vector3
-	local jx = (math.sin(slotId * 12.9898) * 43758.5453) % 1 - 0.5
-	local jz = (math.sin(slotId * 78.2330) * 12543.5732) % 1 - 0.5
-	return Vector3.new(jx, 0, jz) * 0.35
-end
 
 -- ---------------------------------------------------------------------
 -- Concentric "ring layer" math shared by Circle/Ring/Square.
@@ -135,11 +132,9 @@ local SHAPES: { [ShapeName]: (number, number) -> Vector3 } = {
 	Grid = gridOffset,
 }
 
--- GetOffset returns both the shape offset AND the deterministic jitter,
--- since callers always want both and computing jitter is free (one hash).
-function FormationGenerator.GetOffset(shape: ShapeName, slotId: number, spacing: number): (Vector3, Vector3)
+function FormationGenerator.GetOffset(shape: ShapeName, slotId: number, spacing: number): Vector3
 	local fn = SHAPES[shape] or circleOffset
-	return fn(slotId, spacing), jitterFor(slotId)
+	return fn(slotId, spacing)
 end
 
 function FormationGenerator.IsValidShape(shape: string): boolean

@@ -3,38 +3,29 @@
 -- The ONE system (registered once with Scheduler, same pattern as
 -- FollowSystem) that drives every Army's formation in the game.
 --
--- Two passes per tick, deliberately split by cost:
+-- There is only ONE pass now: a bucketed movement re-aim pass over every
+-- occupied slot. The old "interpolate slot.WorldPosition every frame"
+-- pass is GONE -- FormationComponent.DesiredPosition is now the
+-- authoritative, stable nav target (see FormationComponent.lua's design
+-- note), so there's nothing left here to interpolate. Humanoids walk
+-- straight at a fixed point and stop; they don't chase a target that's
+-- still drifting toward its own final spot.
 --
---   1. Anchor + interpolation pass -- O(n) over ALL occupied slots, EVERY
---      frame. This is cheap: a CFrame:PointToWorldSpace + a Lerp per
---      slot, no engine calls. Doing this every frame is what keeps
---      formations smooth (spec: "Formation should not snap").
---
---   2. Movement pass -- only actually calls into MovementComponent
---      (:SetDirection), which is the expensive-ish part (touches the
---      Humanoid). Bucketed across BUCKET_COUNT frames exactly like
---      FollowSystem, for the exact same reason: a slot that's already
---      walking in roughly the right direction doesn't need re-aiming
---      every single tick, and persistent-velocity Move() keeps it
---      walking smoothly between re-aims anyway.
---
--- Both passes iterate FLAT arrays (formations list, slots' own _occupied
--- arrays) -- never nested "for every army, for every OTHER army's
+-- Iterates FLAT arrays (formations list, each formation's own _occupied
+-- array) -- never nested "for every army, for every OTHER army's
 -- minions" loops, so this stays O(n) total across the whole game, never
 -- O(n^2).
 
 local BUCKET_COUNT = 8
 local DIRECTION_EPSILON = 0.12  -- skip re-aiming for ~7 degree direction changes
-local ARRIVE_DISTANCE = 1.5     -- stop walking once this close to the slot
+local ARRIVE_DISTANCE = 1.5     -- stop walking once this close (horizontally) to the slot
+local MAX_VERTICAL_REACH = 6    -- beyond this Y difference, treat the slot as unreachable
 
 local FormationSystem = {}
 FormationSystem.__index = FormationSystem
 FormationSystem.Name = "FormationSystem"
 
--- Flat list of every live FormationComponent (one per Army). Iterated in
--- full every frame for pass 1; ~tens of entries even with hundreds of
--- players, so this is not the bottleneck -- the per-slot work inside each
--- formation is.
+-- Flat list of every live FormationComponent (one per Army).
 local formations: { any } = {}
 local frameCounter = 0
 
@@ -51,12 +42,21 @@ function FormationSystem.UnregisterFormation(formation: any)
 	end
 end
 
+-- Slot.DesiredPosition is fixed until FormationComponent says otherwise
+-- (anchor moved enough / shape changed / spacing changed / joined). So
+-- once a minion reaches it (or the slot is confirmed unreachable) and
+-- Reached is set, this function does NOTHING on every subsequent
+-- evaluation until DesiredPosition actually changes -- no repeated
+-- Stop() calls, no re-aiming, no drift.
 local function evaluateSlotMovement(slot: any)
 	if not slot.Occupied then
 		return
 	end
 	local minion = slot.AssignedMinion
 	if not minion or minion.Destroyed then
+		return
+	end
+	if slot.Reached then
 		return
 	end
 
@@ -72,48 +72,49 @@ local function evaluateSlotMovement(slot: any)
 	end
 
 	local myPos = (rootPart :: BasePart).Position
-	local targetPos = slot.WorldPosition
-	local offset = targetPos - myPos
-	local distance = offset.Magnitude
+	local desired = slot.DesiredPosition
+	local offset = desired - myPos
+	local horizontal = Vector3.new(offset.X, 0, offset.Z)
+	local distance = horizontal.Magnitude
 
 	if distance <= ARRIVE_DISTANCE then
-		if slot._moving then
-			slot._moving = false
+		if slot.Moving then
+			slot.Moving = false
 			slot._lastDirection = nil
 			movement:Stop()
 		end
+		slot.Reached = true
 		return
 	end
 
-	if math.abs(offset.Y) > 6 then
-		-- Different level / unreachable height for now; stop rather than
-		-- walk into a wall. A future pathfinding-aware system can hook in
-		-- here without FormationSystem needing to change.
-		if slot._moving then
+	if math.abs(offset.Y) > MAX_VERTICAL_REACH then
+		-- Different level / unreachable for now. Stop AND mark Reached so
+		-- we stop re-evaluating a spot we can't get to every bucket cycle
+		-- -- the formation waits at the last reachable position instead
+		-- of jittering. FormationComponent clears Reached the moment the
+		-- anchor/shape actually changes again, which is the only thing
+		-- that can make this slot reachable. A future pathfinding-aware
+		-- system can hook in here without this file needing to change.
+		if slot.Moving then
 			movement:Stop()
-			slot._moving = false
+			slot.Moving = false
 		end
+		slot.Reached = true
 		return
 	end
 
-	local direction = Vector3.new(offset.X, 0, offset.Z).Unit
+	local direction = horizontal.Unit
 	local lastDir = slot._lastDirection
-	if lastDir and slot._moving and lastDir:Dot(direction) > (1 - DIRECTION_EPSILON) then
+	if lastDir and slot.Moving and lastDir:Dot(direction) > (1 - DIRECTION_EPSILON) then
 		return
 	end
 
 	slot._lastDirection = direction
-	slot._moving = true
+	slot.Moving = true
 	movement:SetDirection(direction)
 end
 
-function FormationSystem:Update(dt: number)
-	-- Pass 1: every occupied slot, every frame. Pure math, no engine calls.
-	for _, formation in ipairs(formations) do
-		formation:InterpolateSlots(dt)
-	end
-
-	-- Pass 2: bucketed movement re-aim.
+function FormationSystem:Update(_dt: number)
 	frameCounter += 1
 	local bucket = frameCounter % BUCKET_COUNT
 

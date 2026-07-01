@@ -20,6 +20,11 @@ local ArmyService = {}
 -- O(1) for Create/Destroy/Get/Exists -- no secondary id-translation step.
 local armies: { [Player]: Army.Army } = {}
 
+-- Player -> last known ground Y under them. A failed raycast (player
+-- mid-air, over a gap, etc.) holds this last reachable height instead of
+-- letting the anchor snap to some arbitrary fallback.
+local lastGroundY: { [Player]: number } = {}
+
 local nextArmyId = 0
 local function generateArmyId(): number
 	nextArmyId += 1
@@ -45,6 +50,7 @@ function ArmyService.Destroy(player: Player)
 		return
 	end
 	armies[player] = nil
+	lastGroundY[player] = nil
 	army:Destroy()
 end
 
@@ -68,11 +74,42 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	ArmyService.Destroy(player)
 end)
 
+-- Raycasts straight down from the player's HumanoidRootPart to find the
+-- ground they're actually standing on, so the formation anchors to
+-- navigable terrain instead of to the player's raw root-part height.
+-- This matters the moment a player steps onto a box/ledge: without this,
+-- the anchor's Y jumps to the player's new height, every slot's
+-- DesiredPosition would recompute above the (still-grounded) minions,
+-- FormationSystem's "unreachable height" check would fail every single
+-- time it got re-triggered -- which is what read as jitter before. Now:
+-- one clean recompute to the new ground height, minions correctly stop
+-- and wait, no repeat churn.
+local RAY_DISTANCE = 50
+local function resolveAnchorPosition(player: Player, character: Model, primaryPart: BasePart): Vector3
+	local origin = primaryPart.Position
+
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.FilterDescendantsInstances = { character }
+
+	local result = workspace:Raycast(origin, Vector3.new(0, -RAY_DISTANCE, 0), raycastParams)
+	if result then
+		lastGroundY[player] = result.Position.Y
+		return Vector3.new(origin.X, result.Position.Y, origin.Z)
+	end
+
+	local fallbackY = lastGroundY[player] or origin.Y
+	return Vector3.new(origin.X, fallbackY, origin.Z)
+end
+
 -- The single place that drives every Army's formation anchor. Cheap:
 -- one Heartbeat connection, O(armies) per frame (tens of entries even
--- with hundreds of players), each iteration just reads the owner's
--- PrimaryPart CFrame and forwards it to Army:SetAnchor -- no engine
--- mutation here, FormationSystem's own bucketed pass handles that.
+-- with hundreds of players), each iteration resolves the owner's
+-- grounded anchor position and forwards it to Army:SetAnchor.
+-- FormationComponent:SetAnchor is itself gated (see its own comments) so
+-- most of these calls do NOT trigger a slot recompute -- only ones where
+-- the player has actually moved far enough to matter.
+--
 -- This replaces per-minion FollowComponent for any minion that belongs
 -- to an Army: the army-as-a-whole follows the player, and
 -- FormationSystem is the only thing that ever calls
@@ -80,19 +117,20 @@ end)
 -- IMPORTANT: anchor is position-only, NOT primaryPart.CFrame.
 -- HumanoidRootPart's rotation changes constantly (every time the
 -- character turns to face a direction, including just looking around
--- while standing still), and FormationComponent:InterpolateSlots()
--- rotates every slot's offset by the anchor's rotation -- so feeding it
--- the full CFrame made the whole formation spin around the player on
--- every facing change instead of just translating with their position.
--- CFrame.new(position) has identity rotation, so slot offsets stay
--- fixed in world-space orientation and only translate as the player
--- moves, which is what "follow the player" formations actually want.
+-- while standing still), and slot offsets get rotated by the anchor's
+-- rotation -- so feeding it the full CFrame would spin the whole
+-- formation around the player on every facing change instead of just
+-- translating with their position. CFrame.new(position) has identity
+-- rotation, so slot offsets stay fixed in world-space orientation and
+-- only translate as the player moves, which is what "follow the player"
+-- formations actually want.
 RunService.Heartbeat:Connect(function()
 	for player, army in pairs(armies) do
 		local character = player.Character
 		local primaryPart = character and character.PrimaryPart
-		if primaryPart then
-			army:SetAnchor(CFrame.new(primaryPart.Position))
+		if character and primaryPart then
+			local anchorPosition = resolveAnchorPosition(player, character, primaryPart)
+			army:SetAnchor(CFrame.new(anchorPosition))
 		end
 	end
 end)
