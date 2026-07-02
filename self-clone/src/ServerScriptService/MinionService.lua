@@ -1,191 +1,92 @@
---!strict
--- MinionService.lua
--- The single authoritative manager for all minions on the server.
--- Owns the entity registry and a per-owner index for O(1) lookups.
--- Server authoritative: clients never spawn, destroy, or mutate minions
--- directly — they send requests via RemoteEvents, which this service
--- validates and applies.
+-- ServerScriptService/MinionService.lua
+-- Spawns plain minion objects (NOT an entity/component framework).
+-- A minion is just: { Model, Humanoid, Animator, Movement, Animation }.
 
-local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
 
-local Framework = ReplicatedStorage.Framework
-local MinionEntity = require(Framework.MinionEntity)
-local Signal = require(Framework.Signal)
-
-export type SpawnOptions = {
-	Model: Model?,
-}
+local MovementComponent = require(ReplicatedStorage.Components.MovementComponent)
+local AnimationComponent = require(ReplicatedStorage.Components.AnimationComponent)
 
 local MinionService = {}
-MinionService.__index = MinionService
+MinionService._minionsByArmy = {} -- [army] = { minion, minion, ... }
 
--- entityId -> MinionEntity
-local entities: { [number]: MinionEntity.MinionEntity } = {}
+-- REQUIRED SETUP (not code, just Studio setup):
+--   ServerStorage
+--     └── Assets
+--          └── MinionTemplate   (Model, PrimaryPart set, contains Humanoid)
+--
+-- The Humanoid needs an Animator (Roblox adds one automatically at runtime
+-- if missing, but it's cleaner to have it baked into the template).
+local ASSETS_FOLDER = ServerStorage:WaitForChild("Assets")
+local MINION_TEMPLATE = ASSETS_FOLDER:WaitForChild("MinionTemplate")
 
--- Player -> { [entityId]: true } ; set semantics for O(1) add/remove
-local ownerIndex: { [Player]: { [number]: true } } = {}
+-- Swap these for your real animation asset ids.
+local IDLE_ANIMATION_ID = "rbxassetid://0000000000"
+local WALK_ANIMATION_ID = "rbxassetid://0000000000"
 
-local entityCount = 0
-local nextId = 0
+local function buildMinion(spawnCFrame)
+	local model = MINION_TEMPLATE:Clone()
+	model:PivotTo(spawnCFrame)
+	model.Parent = workspace
 
-local MinionSpawned = Signal.new() -- (entity)
-local MinionDestroyed = Signal.new() -- (entity)
+	local humanoid = model:WaitForChild("Humanoid")
+	local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
 
-local function generateId(): number
-	nextId += 1
-	return nextId
-end
+	local idleAnim = Instance.new("Animation")
+	idleAnim.AnimationId = IDLE_ANIMATION_ID
 
-local function ensureOwnerSet(owner: Player): { [number]: true }
-	local set = ownerIndex[owner]
-	if not set then
-		set = {}
-		ownerIndex[owner] = set
-	end
-	return set
-end
+	local walkAnim = Instance.new("Animation")
+	walkAnim.AnimationId = WALK_ANIMATION_ID
 
---[[
-	Spawns a new minion owned by `owner`. The caller (server-side game logic,
-	never the client directly) is responsible for deciding *whether* a spawn
-	is allowed (limits, cooldowns, currency, etc.) before calling this.
-]]
-function MinionService.Spawn(owner: Player, options: SpawnOptions?): MinionEntity.MinionEntity
-	options = options or {}
+	local minion = {
+		Model = model,
+		Humanoid = humanoid,
+		Animator = animator,
 
-	local id = generateId()
-	local entity = MinionEntity.new(id, owner, options.Model)
+		Movement = MovementComponent.new(humanoid),
+		Animation = AnimationComponent.new(animator, idleAnim, walkAnim),
+	}
 
-	entities[id] = entity
-	ensureOwnerSet(owner)[id] = true
-	entityCount += 1
-
-	entity.Destroying:Once(function()
-		MinionService._unregister(entity)
-	end)
-
-	MinionSpawned:Fire(entity)
-	return entity
-end
-
-function MinionService._unregister(entity: MinionEntity.MinionEntity)
-	local id = entity.Id
-	if not entities[id] then
-		return
-	end
-
-	entities[id] = nil
-
-	local set = ownerIndex[entity.Owner]
-	if set then
-		set[id] = nil
-		if next(set) == nil then
-			ownerIndex[entity.Owner] = nil
+	function minion:Destroy()
+		self.Movement:Destroy()
+		self.Animation:Destroy()
+		if self.Model then
+			self.Model:Destroy()
 		end
 	end
 
-	entityCount -= 1
-	MinionDestroyed:Fire(entity)
+	return minion
 end
 
---[[
-	Destroys a minion by id. Idempotent — destroying an already-destroyed
-	or nonexistent id is a no-op.
-]]
-function MinionService.Destroy(id: number)
-	local entity = entities[id]
-	if not entity then
-		return
-	end
-	entity:Destroy()
+function MinionService.Spawn(army, spawnCFrame)
+	spawnCFrame = spawnCFrame or army.Anchor
+
+	local minion = buildMinion(spawnCFrame)
+	army:AddMinion(minion)
+
+	MinionService._minionsByArmy[army] = MinionService._minionsByArmy[army] or {}
+	table.insert(MinionService._minionsByArmy[army], minion)
+
+	return minion
 end
 
---[[
-	Destroys every minion owned by `owner`. Used on PlayerRemoving and for
-	explicit "clear my minions" actions.
-]]
-function MinionService.DestroyAllForOwner(owner: Player)
-	local set = ownerIndex[owner]
-	if not set then
-		return
-	end
+function MinionService.Destroy(army, minion)
+	army:RemoveMinion(minion)
 
-	-- Snapshot ids first: Destroy() mutates `set` via the Destroying signal,
-	-- so iterating the live table while destroying would skip entries.
-	local ids = {}
-	for id in pairs(set) do
-		table.insert(ids, id)
-	end
-
-	for _, id in ipairs(ids) do
-		MinionService.Destroy(id)
-	end
-end
-
-function MinionService.Get(id: number): MinionEntity.MinionEntity?
-	return entities[id]
-end
-
-function MinionService.Exists(id: number): boolean
-	return entities[id] ~= nil
-end
-
---[[
-	Returns a fresh array of entities owned by `owner`. O(n) in the number
-	of that owner's minions, not the global registry.
-]]
-function MinionService.GetByOwner(owner: Player): { MinionEntity.MinionEntity }
-	local set = ownerIndex[owner]
-	if not set then
-		return {}
-	end
-
-	local result = {}
-	for id in pairs(set) do
-		local entity = entities[id]
-		if entity then
-			table.insert(result, entity)
+	local list = MinionService._minionsByArmy[army]
+	if list then
+		local index = table.find(list, minion)
+		if index then
+			table.remove(list, index)
 		end
 	end
-	return result
+
+	minion:Destroy()
 end
 
---[[
-	Iterates every live minion. Safe against the callback destroying the
-	entity it's currently visiting (snapshot semantics), but does not
-	guarantee inclusion of minions spawned during iteration.
-]]
-function MinionService.ForEach(callback: (entity: MinionEntity.MinionEntity) -> ())
-	for _, entity in pairs(entities) do
-		if not entity.Destroyed then
-			callback(entity)
-		end
-	end
+function MinionService.GetArmyMinions(army)
+	return MinionService._minionsByArmy[army] or {}
 end
-
-function MinionService.Count(): number
-	return entityCount
-end
-
-function MinionService.CountForOwner(owner: Player): number
-	local set = ownerIndex[owner]
-	if not set then
-		return 0
-	end
-
-	local count = 0
-	for _ in pairs(set) do
-		count += 1
-	end
-	return count
-end
-
-MinionService.MinionSpawned = MinionSpawned
-MinionService.MinionDestroyed = MinionDestroyed
-
-Players.PlayerRemoving:Connect(function(player: Player)
-	MinionService.DestroyAllForOwner(player)
-end)
 
 return MinionService
