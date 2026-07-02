@@ -1,6 +1,3 @@
--- ReplicatedStorage/Components/AnimationComponent.lua
--- Owns idle/walk animation state for a single minion. Nothing else.
-
 local AnimationComponent = {}
 AnimationComponent.__index = AnimationComponent
 
@@ -22,7 +19,7 @@ end
 
 function AnimationComponent:SetMoving(isMoving)
 	if isMoving == self._moving then
-		return -- no-op, avoids restarting the track every frame
+		return 
 	end
 
 	self._moving = isMoving
