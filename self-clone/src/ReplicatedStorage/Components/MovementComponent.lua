@@ -1,7 +1,3 @@
--- ReplicatedStorage/Components/MovementComponent.lua
--- Owns EVERYTHING movement related for a single minion.
--- No other file should touch Humanoid:MoveTo directly.
-
 local MovementComponent = {}
 MovementComponent.__index = MovementComponent
 
@@ -21,8 +17,7 @@ function MovementComponent:SetTarget(position)
 	self.CurrentTarget = position
 end
 
--- Called once per Heartbeat by FormationSystem.
--- Moves the humanoid toward CurrentTarget and returns whether it is walking.
+
 function MovementComponent:Move()
 	if not self.CurrentTarget or not self.Humanoid or self.Humanoid.Health <= 0 then
 		self._isMoving = false
