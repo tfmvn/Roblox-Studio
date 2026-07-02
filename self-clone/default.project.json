@@ -12,9 +12,6 @@
       "$path": "src/ServerScriptService"
     },
 
-    "ServerStorage": {
-      "$path": "src/ServerStorage"
-    },
 
     "StarterPlayer": {
       "StarterPlayerScripts": {
@@ -23,12 +20,7 @@
       "StarterCharacterScripts": {
         "$path": "src/StarterPlayer/StarterCharacterScripts"
       }
-    },
+    }
 
-    "Workspace": {
-      "$path": "src/Workspace"
-    },
-
-    "SoundService": {}
   }
 }
