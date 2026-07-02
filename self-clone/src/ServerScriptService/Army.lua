@@ -1,17 +1,19 @@
--- ServerScriptService/Army.lua
-
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local FormationGenerator = require(ReplicatedStorage.Framework.FormationGenerator)
 
 local Army = {}
 Army.__index = Army
 
+
 function Army.new(owner)
 	return setmetatable({
 		Owner = owner,
 		Minions = {},
-		Shape = "Circle",
+		Shape = "Wedge",
 		Spacing = 6,
+		FormationConfig = {
+    		Angle = 20,
+		},
 		Anchor = CFrame.new(),
 	}, Army)
 end
@@ -33,7 +35,7 @@ function Army:GetDesiredPosition(minion)
 		return self.Anchor.Position
 	end
 
-	local offset = FormationGenerator.GetOffset(index, #self.Minions, self.Shape, self.Spacing)
+	local offset = FormationGenerator.GetOffset(index, #self.Minions, self.Shape, self.Spacing, self.FormationConfig)
 	return (self.Anchor * CFrame.new(offset)).Position
 end
 
