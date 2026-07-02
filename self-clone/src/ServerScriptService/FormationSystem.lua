@@ -1,14 +1,3 @@
--- ServerScriptService/FormationSystem.lua
--- Runs every Heartbeat via the Scheduler. This is the entire Phase 1
--- gameplay loop:
---
---   for every army
---       update anchor
---       for every minion
---           desiredPosition
---           movement:SetTarget()
---           animation:SetMoving()
-
 local ArmyService = require(script.Parent.ArmyService)
 
 local FormationSystem = {}
