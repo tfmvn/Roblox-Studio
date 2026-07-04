@@ -162,3 +162,13 @@ end
 
 
 return junk
+
+
+    local chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    local result = ""
+    for i = 1, length do
+        local index = math.random(1, #chars)
+        result = result .. chars:sub(index, index)
+    end
+    return result
+end
