@@ -132,4 +132,33 @@ junk.final = {
     count = #junk.randomNumbers,
 }
 
+
+junk.version = "1.1.0"
+
+function junk.generateUUID()
+    local template = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"
+    return (string.gsub(template, '[xy]', function (c)
+        local v = (c == 'x') and math.random(0, 15) or (math.random(8, 11))
+        return string.format('%x', v)
+    end))
+end
+
+function junk.shuffle(tbl)
+    local t = {}
+    for i = 1, #tbl do t[i] = tbl[i] end
+    for i = #t, 2, -1 do
+        local j = math.random(1, i)
+        t[i], t[j] = t[j], t[i]
+    end
+    return t
+end
+
+function junk.mergeTables(a, b)
+    local out = {}
+    for k, v in pairs(a) do out[k] = v end
+    for k, v in pairs(b) do out[k] = v end
+    return out
+end
+
+
 return junk
